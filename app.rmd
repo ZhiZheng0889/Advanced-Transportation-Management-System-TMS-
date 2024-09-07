@@ -1,0 +1,417 @@
+---
+title: "Transportation Management System"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(shiny)
+library(shinydashboard)
+library(DBI)
+library(RPostgres)
+library(jsonlite)
+
+# Database connection function
+db_connect <- function() {
+  dbConnect(RPostgres::Postgres(),
+            dbname = "vmzujlzg",
+            host = "fanny.db.elephantsql.com",
+            port = 5432,
+            user = "vmzujlzg",
+            password = "ztlvP__lnXUE_R9KBUCCgTfjF9llCaMn")
+}
+
+# Database disconnection function
+db_disconnect <- function(con) {
+  dbDisconnect(con)
+}
+
+
+```
+
+```{r}
+# Fetch data functions
+fetch_orders_data <- function(con) {
+  dbGetQuery(con, 'SELECT orderid, customerid, 
+                      TO_CHAR(orderdate, \'YYYY-MM-DD\') AS orderdate, 
+                      items, destinationaddress, specialinstructions 
+                    FROM "Order" LIMIT 10')
+}
+
+fetch_shipments_data <- function(con, status_filter = "All") {
+  query <- if (status_filter == "All") {
+    'SELECT shipmentid, orderid, 
+            TO_CHAR(pickupdate, \'YYYY-MM-DD\') AS pickupdate, 
+            TO_CHAR(estimateddeliverydate, \'YYYY-MM-DD\') AS estimateddeliverydate, 
+            currentstatus 
+            FROM Shipment LIMIT 10'
+  } else {
+    paste('SELECT shipmentid, orderid, 
+            TO_CHAR(pickupdate, \'YYYY-MM-DD\') AS pickupdate, 
+            TO_CHAR(estimateddeliverydate, \'YYYY-MM-DD\') AS estimateddeliverydate, 
+            currentstatus 
+            FROM Shipment WHERE currentstatus =', shQuote(status_filter), 'LIMIT 10')
+  }
+  dbGetQuery(con, query)
+}
+
+fetch_vehicles_data <- function(con) {
+  dbGetQuery(con, 'SELECT vehicleid, vehicletype, capacity, 
+                      licenseplatenumber, maintenancerecords 
+                    FROM Vehicle LIMIT 10')
+}
+
+fetch_drivers_data <- function(con) {
+  dbGetQuery(con, 'SELECT driverid, name, licenseinformation, 
+                      availabilitystatus 
+                    FROM Driver LIMIT 10')
+}
+
+fetch_warehouses_data <- function(con) {
+  dbGetQuery(con, 'SELECT warehouseid, location, storagecapacity 
+                    FROM Warehouse LIMIT 10')
+}
+
+fetch_orders_status_data <- function(con) {
+  orders_status <- dbGetQuery(con, 'SELECT CurrentStatus AS status, COUNT(*) AS count FROM Shipment GROUP BY CurrentStatus')
+  print(orders_status)
+  orders_status
+}
+
+fetch_shipments_status_data <- function(con) {
+  shipments_status <- dbGetQuery(con, 'SELECT CurrentStatus AS currentstatus, COUNT(*) AS count FROM Shipment GROUP BY CurrentStatus')
+  print(shipments_status)
+  shipments_status
+}
+
+
+```
+
+```{r}
+# Add a new order to the database
+add_new_order <- function(con, customer_id, order_date, items, address, instructions) {
+  dbExecute(con, 'INSERT INTO "Order" (customerid, orderdate, items, destinationaddress, specialinstructions) 
+                  VALUES ($1, $2, $3, $4, $5)', 
+            params = list(customer_id, as.character(order_date), items, address, instructions))
+}
+```
+
+```{r}
+# Plotting functions
+plot_orders_status <- function(con) {
+  orders_status <- fetch_orders_status_data(con)
+  print(orders_status) # Debugging
+  
+  if (nrow(orders_status) > 0) {
+    orders_status$count <- as.numeric(orders_status$count) # Ensure count is numeric
+    barplot(orders_status$count, names.arg = orders_status$status, col = "blue", main = "Orders by Status")
+  } else {
+    plot.new()
+    text(0.5, 0.5, "No data available", cex = 1.5)
+  }
+}
+
+plot_shipments_status <- function(con) {
+  shipments_status <- fetch_shipments_status_data(con)
+  print(shipments_status) # Debugging
+  
+  if (nrow(shipments_status) > 0) {
+    shipments_status$count <- as.numeric(shipments_status$count) # Ensure count is numeric
+    barplot(shipments_status$count, names.arg = shipments_status$currentstatus, col = "green", main = "Shipments by Status")
+  } else {
+    plot.new()
+    text(0.5, 0.5, "No data available", cex = 1.5)
+  }
+}
+
+
+
+```
+
+```{r}
+# Event handling functions
+handle_add_order <- function(con, input, output) {
+  add_new_order(con, input$newOrderCustomer, input$newOrderDate, input$newOrderItems, input$newOrderAddress, input$newOrderInstructions)
+  showModal(modalDialog(
+    title = "Success",
+    "New order added successfully!",
+    easyClose = TRUE,
+    footer = NULL
+  ))
+  output$ordersContent <- renderTable({
+    fetch_orders_data(con)
+  })
+}
+```
+
+```{r}
+validate_user <- function(con, username, password) {
+  query <- sprintf("SELECT * FROM Users WHERE Username = '%s' AND Password = '%s'", username, password)
+  res <- dbGetQuery(con, query)
+  print("Validation Query Result:")
+  print(res)  # Debugging
+  
+  if (nrow(res) == 1) {
+    list(valid = TRUE, user = res)
+  } else {
+    list(valid = FALSE, user = NULL)
+  }
+}
+
+register_user <- function(con, username, password, fullname, role) {
+  role <- trimws(role)  # Normalize the role name by trimming whitespace
+  
+  # Fetch the RoleID for the given role
+  role_query <- sprintf("SELECT RoleID FROM Roles WHERE RoleName = '%s'", role)
+  print(paste("Role Query:", role_query))  # Print the role query for debugging
+  
+  role_result <- dbGetQuery(con, role_query)
+  print("Role Query Result:")
+  print(role_result)  # Print the result of the role query for detailed debugging
+  
+  # Ensure we correctly handle the extraction of RoleID
+  if (nrow(role_result) == 1 && "roleid" %in% tolower(colnames(role_result))) {
+    role_id <- role_result$roleid[1]
+    print(paste("Role ID:", role_id))  # Print the role_id for debugging
+  } else {
+    stop("RoleID fetch returned NULL or multiple results. Check if the role exists in the Roles table.")
+  }
+  
+  # Insert the new user into the Users table
+  query <- sprintf("INSERT INTO Users (Username, Password, FullName, RoleID) VALUES ('%s', '%s', '%s', %d)", username, password, fullname, role_id)
+  print(paste("Insert Query:", query))  # Print the insert query for debugging
+  
+  tryCatch({
+    dbExecute(con, query)
+    TRUE  # Return TRUE if insertion is successful
+  }, error = function(e) {
+    print(e)  # Print the error message for debugging
+    if (grepl("duplicate key value violates unique constraint", e$message)) {
+      FALSE  # Return FALSE if the username already exists
+    } else {
+      stop(e)  # Rethrow other errors
+    }
+  })
+}
+
+
+```
+
+```{r}
+is_admin <- function(user) {
+  !is.null(user) && user$roleid == 3  # Assuming 3 is the RoleID for Admin
+}
+
+```
+
+```{r ui_functions}
+create_login_ui <- function() {
+  fluidPage(
+    titlePanel("Login"),
+    sidebarLayout(
+      sidebarPanel(
+        textInput("loginUsername", "Username"),
+        passwordInput("loginPassword", "Password"),
+        actionButton("loginBtn", "Login"),
+        br(),
+        actionButton("showRegistration", "Register")
+      ),
+      mainPanel(
+        textOutput("loginStatus")
+      )
+    )
+  )
+}
+
+create_registration_ui <- function() {
+  fluidPage(
+    titlePanel("Registration"),
+    sidebarLayout(
+      sidebarPanel(
+        textInput("regUsername", "Username"),
+        passwordInput("regPassword", "Password"),
+        textInput("regFullName", "Full Name"),
+        selectInput("regRole", "Role", choices = c("Admin", "User")), # Add roles dynamically if needed
+        actionButton("registerBtn", "Register"),
+        br(),
+        actionButton("showLogin", "Back to Login")
+      ),
+      mainPanel(
+        textOutput("registrationStatus")
+      )
+    )
+  )
+}
+
+
+create_dashboard_ui <- function() {
+  fluidRow(
+    infoBox("Total Orders", 100, icon = icon("list-alt")),
+    infoBox("Pending Shipments", 20, icon = icon("truck")),
+    infoBox("Total Vehicles", 50, icon = icon("car")),
+    box(title = "Orders by Status", status = "primary", solidHeader = TRUE, plotOutput("ordersStatusPlot")),
+    box(title = "Shipments by Status", status = "primary", solidHeader = TRUE, plotOutput("shipmentsStatusPlot"))
+  )
+}
+
+create_orders_ui <- function() {
+  tabBox(
+    title = "Order Details",
+    id = "tabset1",
+    tabPanel("View Orders", tableOutput("ordersContent")),
+    tabPanel("Add Order", 
+             textInput("newOrderCustomer", "Customer ID"),
+             dateInput("newOrderDate", "Order Date"),
+             textAreaInput("newOrderItems", "Items"),
+             textInput("newOrderAddress", "Destination Address"),
+             textInput("newOrderInstructions", "Special Instructions"),
+             actionButton("addOrderBtn", "Add Order")
+    )
+  )
+}
+
+create_shipments_ui <- function() {
+  fluidRow(
+    selectInput("shipmentStatusFilter", "Select Status", choices = c("All", "Pending", "In Transit", "Delivered")),
+    tableOutput("filteredShipmentsContent")
+  )
+}
+
+create_vehicles_ui <- function() {
+  tableOutput("vehiclesContent")
+}
+
+create_drivers_ui <- function() {
+  tableOutput("driversContent")
+}
+
+create_warehouses_ui <- function() {
+  tableOutput("warehousesContent")
+}
+
+create_sidebar <- function() {
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Dashboard", tabName = "dashboard", icon = icon("dashboard")),
+      menuItem("Orders", tabName = "orders", icon = icon("list-alt")),
+      menuItem("Shipments", tabName = "shipments", icon = icon("truck")),
+      menuItem("Vehicles", tabName = "vehicles", icon = icon("car")),
+      menuItem("Drivers", tabName = "drivers", icon = icon("user")),
+      menuItem("Warehouses", tabName = "warehouses", icon = icon("warehouse"))
+    )
+  )
+}
+
+create_body <- function() {
+  dashboardBody(
+    tabItems(
+      tabItem(tabName = "dashboard", create_dashboard_ui()),
+      tabItem(tabName = "orders", create_orders_ui()),
+      tabItem(tabName = "shipments", create_shipments_ui()),
+      tabItem(tabName = "vehicles", create_vehicles_ui()),
+      tabItem(tabName = "drivers", create_drivers_ui()),
+      tabItem(tabName = "warehouses", create_warehouses_ui())
+    )
+  )
+}
+```
+
+
+```{r ui}
+ui <- dashboardPage(
+  dashboardHeader(title = "TMS Dashboard"),
+  create_sidebar(),
+  create_body()
+)
+```
+
+```{r server_functions}
+create_server <- function() {
+  function(input, output, session) {
+    con <- db_connect()
+    
+    user <- reactiveValues(loggedIn = FALSE, username = NULL, roleid = NULL)
+    
+    # Track if the registration form should be shown
+    showRegistration <- reactiveVal(FALSE)
+    
+    output$page <- renderUI({
+      if (!user$loggedIn) {
+        if (showRegistration()) {
+          create_registration_ui()
+        } else {
+          create_login_ui()
+        }
+      } else {
+        if (is_admin(user)) {
+          dashboardPage(
+            dashboardHeader(title = "Admin Dashboard"),
+            create_sidebar(),
+            create_body()  # Admin-specific dashboard
+          )
+        } else {
+          dashboardPage(
+            dashboardHeader(title = "User Dashboard"),
+            create_sidebar(),
+            create_body()  # User-specific dashboard
+          )
+        }
+      }
+    })
+    
+    observeEvent(input$loginBtn, {
+      validation <- validate_user(con, input$loginUsername, input$loginPassword)
+      print(validation)  # Debugging
+      
+      if (validation$valid) {
+        user$loggedIn <- TRUE
+        user$username <- validation$user$username[1]
+        user$roleid <- validation$user$roleid[1]
+        print(paste("User Role ID:", user$roleid))  # Debugging
+        output$loginStatus <- renderText("Login successful!")
+      } else {
+        output$loginStatus <- renderText("Invalid username or password.")
+      }
+    })
+    
+    observeEvent(input$registerBtn, {
+      result <- register_user(con, input$regUsername, input$regPassword, input$regFullName, input$regRole)
+      print(result)  # Debugging
+      
+      if (result) {
+        output$registrationStatus <- renderText("Registration successful! Please login.")
+      } else {
+        output$registrationStatus <- renderText("Registration failed. Username may already exist.")
+      }
+    })
+    
+    observeEvent(input$showRegistration, {
+      showRegistration(TRUE)
+    })
+    
+    observeEvent(input$showLogin, {
+      showRegistration(FALSE)
+    })
+    
+    onStop(function() {
+      db_disconnect(con)
+    })
+  }
+}
+
+```
+
+```{r}
+ui <- fluidPage(
+  uiOutput("page")
+)
+
+```
+
+
+```{r run}
+shinyApp(ui, create_server())
+
+```
+
+

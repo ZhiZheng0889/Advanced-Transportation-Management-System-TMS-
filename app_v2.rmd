@@ -1,0 +1,269 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(shiny)
+library(shinydashboard)
+library(shinyjs)
+
+# Define UI for application
+ui <- dashboardPage(
+  dashboardHeader(title = "Warehouse Management Dashboard"),
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Dashboard", tabName = "dashboard", icon = icon("dashboard")),
+      menuItem("Login", tabName = "login", icon = icon("sign-in")),
+      menuItem("Signup", tabName = "signup", icon = icon("user-plus")),
+      menuItem("Schema", tabName = "schema", icon = icon("table"))
+    )
+  ),
+  dashboardBody(
+    useShinyjs(),
+    tabItems(
+      tabItem(tabName = "dashboard",
+              fluidPage(
+                h2("Warehouse Management Dashboard"),
+                sidebarLayout(
+                  sidebarPanel(
+                    h3("Filters"),
+                    selectInput("warehouse", "Select Warehouse:", choices = NULL),
+                    selectInput("itemtype", "Select Item Type:", choices = NULL)
+                  ),
+                  mainPanel(
+                    tabsetPanel(
+                      tabPanel("Inventory Levels", plotOutput("inventoryPlot")),
+                      tabPanel("Shipments Over Time", plotOutput("shipmentsPlot")),
+                      tabPanel("Driver Availability Status", plotOutput("driverStatusPlot")),
+                      tabPanel("Order Destinations", plotOutput("orderDestinationsPlot"))
+                    )
+                  )
+                )
+              )),
+      tabItem(tabName = "login",
+              fluidPage(
+                h2("Login"),
+                textInput("login_username", "Username"),
+                passwordInput("login_password", "Password"),
+                actionButton("login_button", "Login"),
+                textOutput("login_status")
+              )),
+      tabItem(tabName = "signup",
+              fluidPage(
+                h2("Signup"),
+                textInput("signup_username", "Username"),
+                passwordInput("signup_password", "Password"),
+                actionButton("signup_button", "Signup"),
+                textOutput("signup_status")
+              )),
+      tabItem(tabName = "schema",
+              fluidPage(
+                h2("Database Schema"),
+                DT::dataTableOutput("schemaTable")
+              ))
+    )
+  )
+)
+
+```
+
+```{r}
+# Load necessary libraries
+library(DBI)
+library(RPostgres)
+library(dplyr)
+library(ggplot2)
+library(DT)
+
+# Establish a connection to the PostgreSQL database
+con <- dbConnect(RPostgres::Postgres(),
+                 dbname = 'bldeebjs',
+                 host = 'ruby.db.elephantsql.com',
+                 port = 5432,
+                 user = 'bldeebjs',
+                 password = '8RMutLtQxk_vKO-0NJdepjf4XG6Cahxr')
+
+# Function to check credentials against the tms_users table in the database
+check_credentials <- function(username, password) {
+  query <- paste0("SELECT * FROM \"TMS_USERS\" WHERE \"username\" = '", username, "' AND \"password\" = '", password, "'")
+  user <- dbGetQuery(con, query)
+  return(nrow(user) == 1)
+}
+
+# Function to add new users to the tms_users table in the database
+add_user <- function(username, password) {
+  # Generate a unique userid
+  max_userid_query <- dbGetQuery(con, "SELECT COALESCE(MAX(\"userid\"), 0) as max_userid FROM \"TMS_USERS\"")
+  userid <- as.integer(max_userid_query$max_userid) + 1
+  query <- paste0("INSERT INTO \"TMS_USERS\" (\"userid\", \"username\", \"password\", \"role\") VALUES (", userid, ", '", username, "', '", password, "', 'Customer')")
+  dbExecute(con, query)
+}
+
+# Function to get data from the database
+get_data <- function(query) {
+  dbGetQuery(con, query)
+}
+
+# Function to create plots
+create_plot <- function(data, x, y, title, xlab, ylab, geom_type = "bar", fill = NULL, position = "dodge") {
+  p <- ggplot(data, aes_string(x = x, y = y, fill = fill))
+  if (geom_type == "bar") {
+    p <- p + geom_bar(stat = "identity", position = position)
+  } else if (geom_type == "line") {
+    p <- p + geom_line()
+  } else if (geom_type == "pie") {
+    p <- p + geom_bar(stat = "identity", width = 1) + coord_polar("y")
+  }
+  p + labs(title = title, x = xlab, y = ylab)
+}
+
+
+# Function to create the inventory plot
+create_inventory_plot <- function() {
+  inventory_levels <- get_data("
+    SELECT w.\"location\" AS location, i.\"itemtype\" AS itemtype, i.\"quantity\" AS quantity
+    FROM \"inventory\" i
+    JOIN \"warehouse\" w ON i.\"warehouseid\" = w.\"warehouseid\"
+  ")
+  
+  # Create a mapping of full location names to shorter labels
+  location_mapping <- c("Warehouse Location A" = "A",
+                        "Warehouse Location B" = "B",
+                        "Warehouse Location C" = "C",
+                        "Warehouse Location D" = "D")
+  
+  # Apply the mapping to the location column
+  inventory_levels$location <- location_mapping[inventory_levels$location]
+  
+  create_plot(inventory_levels, "location", "quantity", "Inventory Levels by Warehouse", "Warehouse Location", "Quantity", fill = "itemtype")
+}
+
+# Function to create the shipments over time plot
+create_shipments_plot <- function() {
+  shipments_over_time <- get_data("
+    SELECT \"pickup_date\" AS pickup_date, COUNT(*) as shipment_count
+    FROM \"shipment\"
+    GROUP BY \"pickup_date\"
+    ORDER BY \"pickup_date\"
+  ")
+  create_plot(shipments_over_time, "as.Date(pickup_date)", "shipment_count", "Shipments Over Time", "Date", "Number of Shipments", geom_type = "line")
+}
+
+# Function to create the driver availability status plot
+create_driver_status_plot <- function() {
+  driver_status <- get_data("
+    SELECT \"availabilitystatus\" AS availability_status, COUNT(*) as driver_count
+    FROM \"driver\"
+    GROUP BY \"availabilitystatus\"
+  ")
+
+  if (nrow(driver_status) == 0) {
+    return(NULL)
+  }
+
+  create_plot(driver_status, "availability_status", "driver_count", "Driver Availability Status", NULL, "Number of Drivers", geom_type = "pie", fill = "availability_status")
+}
+
+
+# Function to create the order destinations plot
+create_order_destinations_plot <- function() {
+  order_destinations <- get_data("
+    SELECT \"destination_address\" AS destination_address, COUNT(*) as order_count
+    FROM \"ORDER\"
+    GROUP BY \"destination_address\"
+  ")
+  create_plot(order_destinations, "reorder(destination_address, -order_count)", "order_count", "Order Destinations", "Destination Address", "Number of Orders") + coord_flip()
+}
+
+
+# Function to get table and column information
+get_table_columns <- function() {
+  query <- "
+  SELECT table_name, column_name, data_type
+  FROM information_schema.columns
+  WHERE table_schema = 'public'
+  ORDER BY table_name, ordinal_position;
+  "
+  dbGetQuery(con, query)
+}
+
+# Define server logic
+server <- function(input, output, session) {
+  # Reactive value to store login status
+  user_logged_in <- reactiveVal(FALSE)
+
+  observeEvent(input$login_button, {
+    username <- input$login_username
+    password <- input$login_password
+    if (check_credentials(username, password)) {
+      shinyjs::alert("Login successful!")
+      user_logged_in(TRUE)
+      updateTabItems(session, "tabs", "dashboard")
+    } else {
+      output$login_status <- renderText("Invalid username or password!")
+    }
+  })
+
+  observeEvent(input$signup_button, {
+    username <- input$signup_username
+    password <- input$signup_password
+
+    if (username != "" & password != "") {
+      tryCatch({
+        add_user(username, password)
+        output$signup_status <- renderText("Signup successful! Please login.")
+      }, error = function(e) {
+        output$signup_status <- renderText(paste("Signup failed! Error: ", e$message))
+      })
+    } else {
+      output$signup_status <- renderText("Both fields are required!")
+    }
+  })
+
+  observe({
+    if (user_logged_in()) {
+      warehouses <- get_data("SELECT DISTINCT \"location\" FROM \"warehouse\"")
+      itemtypes <- get_data("SELECT DISTINCT \"itemtype\" FROM \"inventory\"")
+
+      updateSelectInput(session, "warehouse", choices = warehouses$location)
+      updateSelectInput(session, "itemtype", choices = itemtypes$itemtype)
+    }
+  })
+
+  output$inventoryPlot <- renderPlot({
+    if (user_logged_in()) {
+      create_inventory_plot()
+    }
+  })
+
+  output$shipmentsPlot <- renderPlot({
+    if (user_logged_in()) {
+      create_shipments_plot()
+    }
+  })
+
+  output$driverStatusPlot <- renderPlot({
+    if (user_logged_in()) {
+      create_driver_status_plot()
+    }
+  })
+
+  output$orderDestinationsPlot <- renderPlot({
+    if (user_logged_in()) {
+      create_order_destinations_plot()
+    }
+  })
+
+  output$schemaTable <- DT::renderDataTable({
+    get_table_columns()
+  })
+}
+
+
+# Run the application
+shinyApp(ui = ui, server = server)
+
+```
+
