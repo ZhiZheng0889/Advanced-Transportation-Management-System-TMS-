@@ -1,0 +1,28 @@
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+.Rapp.history
+
+# Environments and secrets
+.Renviron
+.env
+
+# R Markdown / knitted outputs
+*.utf8.md
+*.knit.md
+*.nb.html
+cache/
+*_cache/
+
+# System / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Misc
+.vscode/
+.idea/
+*.log

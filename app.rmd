@@ -11,14 +11,21 @@ library(DBI)
 library(RPostgres)
 library(jsonlite)
 
+# Optionally load .env if present
+if (requireNamespace("dotenv", quietly = TRUE) && file.exists(".env")) {
+  dotenv::load_dot_env()
+}
+
 # Database connection function
 db_connect <- function() {
-  dbConnect(RPostgres::Postgres(),
-            dbname = "vmzujlzg",
-            host = "fanny.db.elephantsql.com",
-            port = 5432,
-            user = "vmzujlzg",
-            password = "ztlvP__lnXUE_R9KBUCCgTfjF9llCaMn")
+  dbConnect(
+    RPostgres::Postgres(),
+    dbname = Sys.getenv("DB_NAME"),
+    host = Sys.getenv("DB_HOST"),
+    port = as.integer(Sys.getenv("DB_PORT", "5432")),
+    user = Sys.getenv("DB_USER"),
+    password = Sys.getenv("DB_PASSWORD")
+  )
 }
 
 # Database disconnection function
@@ -146,8 +153,11 @@ handle_add_order <- function(con, input, output) {
 
 ```{r}
 validate_user <- function(con, username, password) {
-  query <- sprintf("SELECT * FROM Users WHERE Username = '%s' AND Password = '%s'", username, password)
-  res <- dbGetQuery(con, query)
+  res <- dbGetQuery(
+    con,
+    'SELECT * FROM "Users" WHERE "Username" = $1 AND "Password" = $2',
+    params = list(username, password)
+  )
   print("Validation Query Result:")
   print(res)  # Debugging
   
@@ -162,10 +172,11 @@ register_user <- function(con, username, password, fullname, role) {
   role <- trimws(role)  # Normalize the role name by trimming whitespace
   
   # Fetch the RoleID for the given role
-  role_query <- sprintf("SELECT RoleID FROM Roles WHERE RoleName = '%s'", role)
-  print(paste("Role Query:", role_query))  # Print the role query for debugging
-  
-  role_result <- dbGetQuery(con, role_query)
+  role_result <- dbGetQuery(
+    con,
+    'SELECT "RoleID" FROM "Roles" WHERE "RoleName" = $1',
+    params = list(role)
+  )
   print("Role Query Result:")
   print(role_result)  # Print the result of the role query for detailed debugging
   
@@ -178,11 +189,12 @@ register_user <- function(con, username, password, fullname, role) {
   }
   
   # Insert the new user into the Users table
-  query <- sprintf("INSERT INTO Users (Username, Password, FullName, RoleID) VALUES ('%s', '%s', '%s', %d)", username, password, fullname, role_id)
-  print(paste("Insert Query:", query))  # Print the insert query for debugging
-  
   tryCatch({
-    dbExecute(con, query)
+    dbExecute(
+      con,
+      'INSERT INTO "Users" ("Username", "Password", "FullName", "RoleID") VALUES ($1, $2, $3, $4)',
+      params = list(username, password, fullname, role_id)
+    )
     TRUE  # Return TRUE if insertion is successful
   }, error = function(e) {
     print(e)  # Print the error message for debugging

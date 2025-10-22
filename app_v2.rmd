@@ -77,28 +77,41 @@ library(dplyr)
 library(ggplot2)
 library(DT)
 
+# Optionally load .env if present
+if (requireNamespace("dotenv", quietly = TRUE) && file.exists(".env")) {
+  dotenv::load_dot_env()
+}
+
 # Establish a connection to the PostgreSQL database
-con <- dbConnect(RPostgres::Postgres(),
-                 dbname = 'bldeebjs',
-                 host = 'ruby.db.elephantsql.com',
-                 port = 5432,
-                 user = 'bldeebjs',
-                 password = '8RMutLtQxk_vKO-0NJdepjf4XG6Cahxr')
+con <- dbConnect(
+  RPostgres::Postgres(),
+  dbname   = Sys.getenv("DB_NAME"),
+  host     = Sys.getenv("DB_HOST"),
+  port     = as.integer(Sys.getenv("DB_PORT", "5432")),
+  user     = Sys.getenv("DB_USER"),
+  password = Sys.getenv("DB_PASSWORD")
+)
 
 # Function to check credentials against the tms_users table in the database
 check_credentials <- function(username, password) {
-  query <- paste0("SELECT * FROM \"TMS_USERS\" WHERE \"username\" = '", username, "' AND \"password\" = '", password, "'")
-  user <- dbGetQuery(con, query)
+  user <- dbGetQuery(
+    con,
+    'SELECT * FROM "TMS_USERS" WHERE "username" = $1 AND "password" = $2',
+    params = list(username, password)
+  )
   return(nrow(user) == 1)
 }
 
 # Function to add new users to the tms_users table in the database
 add_user <- function(username, password) {
   # Generate a unique userid
-  max_userid_query <- dbGetQuery(con, "SELECT COALESCE(MAX(\"userid\"), 0) as max_userid FROM \"TMS_USERS\"")
+  max_userid_query <- dbGetQuery(con, 'SELECT COALESCE(MAX("userid"), 0) as max_userid FROM "TMS_USERS"')
   userid <- as.integer(max_userid_query$max_userid) + 1
-  query <- paste0("INSERT INTO \"TMS_USERS\" (\"userid\", \"username\", \"password\", \"role\") VALUES (", userid, ", '", username, "', '", password, "', 'Customer')")
-  dbExecute(con, query)
+  dbExecute(
+    con,
+    'INSERT INTO "TMS_USERS" ("userid", "username", "password", "role") VALUES ($1, $2, $3, $4)',
+    params = list(userid, username, password, 'Customer')
+  )
 }
 
 # Function to get data from the database
